@@ -260,25 +260,14 @@ async function handleProfileUpdate(request: Request, env: Env): Promise<Response
       return jsonResponse({ error: 'Invalid API key' }, 401);
     }
 
-    const body = await request.json() as { displayName?: string; isPublic?: boolean };
+    const body = await request.json() as { displayName?: string };
 
-    // Update user profile
-    const updates: string[] = [];
-    const values: any[] = [];
-
-    if (body.displayName !== undefined) {
-      updates.push('display_name = ?');
-      values.push(body.displayName);
-    }
-
-    if (body.isPublic !== undefined) {
-      updates.push('is_public = ?');
-      values.push(body.isPublic ? 1 : 0);
-    }
-
-    if (updates.length === 0) {
+    if (!body.displayName) {
       return jsonResponse({ error: 'No updates provided' }, 400);
     }
+
+    const updates = ['display_name = ?'];
+    const values = [body.displayName];
 
     values.push(user.id);
 
