@@ -45,7 +45,7 @@ In Cloudflare Dashboard:
 
 - `POST /api/auth/register` - Create account, get API key
 - `POST /api/usage/submit` - Submit ccusage JSON (authenticated)
-- `GET /api/leaderboard/monthly` - Monthly leaderboard (with input/output token breakdown)
+- `GET /api/leaderboard` - Monthly leaderboard (with input/output token breakdown)
 - `GET /api/usage/me` - Your usage stats
 
 ## Local Development

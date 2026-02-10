@@ -43,7 +43,7 @@ export default {
       return handleUsageSubmit(request, env);
     }
 
-    if ((url.pathname === '/api/leaderboard/monthly' || url.pathname === '/api/leaderboard/daily') && request.method === 'GET') {
+    if (url.pathname === '/api/leaderboard' && request.method === 'GET') {
       return handleLeaderboard(request, env);
     }
 
@@ -121,54 +121,55 @@ async function handleUsageSubmit(request: Request, env: Env): Promise<Response> 
     // Parse ccusage JSON output
     const body = await request.json() as any;
 
-    // ccusage --json returns: { daily: [...], totals: {...} }
-    // Also support legacy { data: [...] } and flat entry formats
-    const entries: any[] = body.daily || body.data || [body];
+    // Current month key (e.g. "2026-02")
+    const now = new Date();
+    const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
 
-    const now = Date.now();
-    let inserted = 0;
+    // ccusage monthly --json returns: { monthly: [{ month: "2026-02", inputTokens, ... }] }
+    // ccusage daily --json returns: { daily: [{ date: "2026-02-01", ... }] }
+    // Also support flat object with token fields
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let totalTokens = 0;
 
-    for (const entry of entries) {
-      const logId = generateId();
-      const date = entry.date || new Date().toISOString().split('T')[0];
-      const cacheCreate = entry.cacheCreationTokens || entry.cacheCreateTokens || 0;
-      const cacheRead = entry.cacheReadTokens || 0;
-
-      // Insert usage log
-      await env.DB.prepare(`
-        INSERT INTO usage_logs
-        (id, user_id, date, model, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, cost_usd, project, submitted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(
-        logId,
-        user.id,
-        date,
-        entry.model || 'unknown',
-        entry.inputTokens || 0,
-        entry.outputTokens || 0,
-        cacheCreate,
-        cacheRead,
-        entry.totalCost || entry.cost || 0,
-        entry.project || null,
-        now
-      ).run();
-
-      // Update daily stats
-      const totalTokens = (entry.inputTokens || 0) + (entry.outputTokens || 0) +
-                         cacheCreate + cacheRead;
-
-      await env.DB.prepare(`
-        INSERT INTO daily_stats (user_id, date, total_tokens, total_cost)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id, date) DO UPDATE SET
-          total_tokens = total_tokens + excluded.total_tokens,
-          total_cost = total_cost + excluded.total_cost
-      `).bind(user.id, date, totalTokens, entry.totalCost || entry.cost || 0).run();
-
-      inserted++;
+    if (body.monthly) {
+      // Monthly format — find current month entry
+      const entry = body.monthly.find((e: any) => e.month === month);
+      if (entry) {
+        inputTokens = entry.inputTokens || 0;
+        outputTokens = entry.outputTokens || 0;
+        const cacheCreate = entry.cacheCreationTokens || entry.cacheCreateTokens || 0;
+        const cacheRead = entry.cacheReadTokens || 0;
+        totalTokens = inputTokens + outputTokens + cacheCreate + cacheRead;
+      }
+    } else {
+      // Daily format — sum entries matching current month
+      const entries: any[] = body.daily || body.data || [body];
+      for (const entry of entries) {
+        if (entry.date && entry.date.startsWith(month)) {
+          const inp = entry.inputTokens || 0;
+          const out = entry.outputTokens || 0;
+          const cacheCreate = entry.cacheCreationTokens || entry.cacheCreateTokens || 0;
+          const cacheRead = entry.cacheReadTokens || 0;
+          inputTokens += inp;
+          outputTokens += out;
+          totalTokens += inp + out + cacheCreate + cacheRead;
+        }
+      }
     }
 
-    return jsonResponse({ success: true, inserted });
+    // Upsert one row per user per month — idempotent
+    await env.DB.prepare(`
+      INSERT INTO monthly_usage (user_id, month, input_tokens, output_tokens, total_tokens, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, month) DO UPDATE SET
+        input_tokens = excluded.input_tokens,
+        output_tokens = excluded.output_tokens,
+        total_tokens = excluded.total_tokens,
+        updated_at = excluded.updated_at
+    `).bind(user.id, month, inputTokens, outputTokens, totalTokens, Date.now()).run();
+
+    return jsonResponse({ success: true, month, total_tokens: totalTokens });
   } catch (error) {
     console.error('Usage submit error:', error);
     return jsonResponse({ error: 'Failed to submit usage' }, 500);
@@ -178,25 +179,17 @@ async function handleUsageSubmit(request: Request, env: Env): Promise<Response> 
 async function handleLeaderboard(request: Request, env: Env): Promise<Response> {
   try {
     const now = new Date();
-    const year = now.getUTCFullYear();
-    const month = now.getUTCMonth(); // 0-indexed
-    const monthStart = `${year}-${String(month + 1).padStart(2, '0')}-01`;
-    const nextMonth = month === 11 ? `${year + 1}-01-01` : `${year}-${String(month + 2).padStart(2, '0')}-01`;
+    const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
     const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 
     const results = await env.DB.prepare(`
-      SELECT
-        u.display_name,
-        SUM(l.input_tokens) as input_tokens,
-        SUM(l.output_tokens) as output_tokens,
-        SUM(l.input_tokens + l.output_tokens + l.cache_create_tokens + l.cache_read_tokens) as total_tokens
-      FROM usage_logs l
-      JOIN users u ON l.user_id = u.id
-      WHERE l.date >= ? AND l.date < ?
-      GROUP BY l.user_id
-      ORDER BY total_tokens DESC
+      SELECT u.display_name, m.input_tokens, m.output_tokens, m.total_tokens
+      FROM monthly_usage m
+      JOIN users u ON m.user_id = u.id
+      WHERE m.month = ? AND m.total_tokens > 0
+      ORDER BY m.total_tokens DESC
       LIMIT 50
-    `).bind(monthStart, nextMonth).all();
+    `).bind(month).all();
 
     const leaderboard = results.results?.map((row: any, index: number) => ({
       rank: index + 1,
@@ -206,7 +199,7 @@ async function handleLeaderboard(request: Request, env: Env): Promise<Response> 
       total_tokens: row.total_tokens,
     })) || [];
 
-    return jsonResponse({ period: 'monthly', month: monthLabel, leaderboard });
+    return jsonResponse({ month: monthLabel, leaderboard });
   } catch (error) {
     return jsonResponse({ error: 'Failed to fetch leaderboard' }, 500);
   }
@@ -723,7 +716,7 @@ function getIndexHTML(): string {
         <!-- Manual Tab -->
         <div class="tab-panel active" id="panel-manual">
           <p style="color: #6b7280; font-size: 0.85rem; margin-bottom: 1rem; line-height: 1.5;">Run this command in your terminal to submit your usage:</p>
-          <div class="code-block" id="manualCodeBlock">npx ccusage@latest --json | curl -X POST \\
+          <div class="code-block" id="manualCodeBlock">npx ccusage@latest monthly --json | curl -X POST \\
   "https://burnrate.autonomoustech.ca/api/usage/submit" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer <span class="hl" id="apiKeySlot1">YOUR_API_KEY</span>" \\
@@ -745,7 +738,7 @@ function getIndexHTML(): string {
             <div class="code-block"><span class="comment">#!/bin/bash</span>
 API_KEY="<span class="hl" id="apiKeySlot2">YOUR_API_KEY</span>"
 
-npx ccusage@latest --json | curl -s -X POST \\
+npx ccusage@latest monthly --json | curl -s -X POST \\
   "https://burnrate.autonomoustech.ca/api/usage/submit" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
@@ -969,14 +962,12 @@ npx ccusage@latest --json | curl -s -X POST \\
 
     // --- Leaderboard ---
     function loadLeaderboard() {
-      return fetch("/api/leaderboard/monthly")
+      return fetch("/api/leaderboard")
         .then(function(resp) { return resp.json(); })
         .then(function(data) {
-          // Update month label
           if (data.month) {
             document.getElementById("monthLabel").textContent = data.month + " Leaderboard";
           }
-
           var tbody = document.getElementById("leaderboardBody");
           if (!data.leaderboard || data.leaderboard.length === 0) {
             tbody.innerHTML = "<tr><td colspan=\\"5\\" style=\\"text-align:center;padding:3rem 1rem;color:#9ca3af;\\">No entries yet. Be the first to submit your usage!</td></tr>";
