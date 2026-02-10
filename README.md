@@ -37,7 +37,7 @@ In Cloudflare Dashboard:
 ### 3. Use It
 
 1. Visit https://burnrate.autonomoustech.ca
-2. Register with your email
+2. Register with your display name
 3. Copy the API key
 4. Follow setup instructions to configure Claude Code hooks
 
@@ -46,7 +46,7 @@ In Cloudflare Dashboard:
 - `POST /api/auth/register` - Create account, get API key
 - `POST /api/usage/submit` - Submit ccusage JSON (authenticated)
 - `GET /api/leaderboard` - Monthly leaderboard (with input/output token breakdown)
-- `GET /api/usage/me` - Your usage stats
+- `GET /api/usage/me` - Your monthly usage history (last 12 months)
 
 ## Local Development
 
@@ -71,7 +71,7 @@ Once you have your API key, create:
 API_KEY="your-api-key-here"
 API_URL="https://burnrate.autonomoustech.ca/api/usage/submit"
 
-npx ccusage@latest --json | curl -X POST "$API_URL" \
+npx ccusage@latest monthly --json | curl -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
   -d @-
@@ -112,9 +112,8 @@ Claude Code → SessionEnd Hook → burnrate.sh → POST /api/usage/submit
 
 ## Database Schema
 
-- **users** - Email, API key, display name
-- **usage_logs** - Raw usage entries
-- **daily_stats** - Aggregated daily totals
+- **users** - API key, display name
+- **monthly_usage** - Token usage per user per month (input, output, total)
 
 ## License
 

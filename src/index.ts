@@ -213,29 +213,28 @@ async function handleMyUsage(request: Request, env: Env): Promise<Response> {
     }
 
     const apiKey = authHeader.substring(7);
-    const user = await env.DB.prepare('SELECT id, email, display_name FROM users WHERE api_key = ?')
+    const user = await env.DB.prepare('SELECT id, display_name FROM users WHERE api_key = ?')
       .bind(apiKey)
-      .first<{ id: string; email: string; display_name: string }>();
+      .first<{ id: string; display_name: string }>();
 
     if (!user) {
       return jsonResponse({ error: 'Invalid API key' }, 401);
     }
 
-    const today = new Date().toISOString().split('T')[0];
-
     const stats = await env.DB.prepare(`
       SELECT 
-        date,
+        month,
+        input_tokens,
+        output_tokens,
         total_tokens,
-        total_cost
-      FROM daily_stats
+        updated_at
+      FROM monthly_usage
       WHERE user_id = ?
-      ORDER BY date DESC
-      LIMIT 30
+      ORDER BY month DESC
+      LIMIT 12
     `).bind(user.id).all();
 
     return jsonResponse({
-      email: user.email,
       displayName: user.display_name,
       stats: stats.results || [],
     });
