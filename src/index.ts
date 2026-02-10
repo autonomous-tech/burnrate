@@ -51,6 +51,10 @@ export default {
       return handleMyUsage(request, env);
     }
 
+    if (url.pathname === '/api/profile/update' && request.method === 'POST') {
+      return handleProfileUpdate(request, env);
+    }
+
     // Serve static HTML for root
     if (url.pathname === '/') {
       return new Response(getIndexHTML(), {
@@ -239,6 +243,54 @@ async function handleMyUsage(request: Request, env: Env): Promise<Response> {
     });
   } catch (error) {
     return jsonResponse({ error: 'Failed to fetch usage' }, 500);
+  }
+}
+
+async function handleProfileUpdate(request: Request, env: Env): Promise<Response> {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return jsonResponse({ error: 'Missing API key' }, 401);
+    }
+
+    const apiKey = authHeader.substring(7);
+    const user = await env.DB.prepare('SELECT id FROM users WHERE api_key = ?')
+      .bind(apiKey)
+      .first<{ id: string }>();
+
+    if (!user) {
+      return jsonResponse({ error: 'Invalid API key' }, 401);
+    }
+
+    const body = await request.json() as { displayName?: string; isPublic?: boolean };
+
+    // Update user profile
+    const updates: string[] = [];
+    const values: any[] = [];
+
+    if (body.displayName !== undefined) {
+      updates.push('display_name = ?');
+      values.push(body.displayName);
+    }
+
+    if (body.isPublic !== undefined) {
+      updates.push('is_public = ?');
+      values.push(body.isPublic ? 1 : 0);
+    }
+
+    if (updates.length === 0) {
+      return jsonResponse({ error: 'No updates provided' }, 400);
+    }
+
+    values.push(user.id);
+
+    await env.DB.prepare(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = ?`
+    ).bind(...values).run();
+
+    return jsonResponse({ success: true, message: 'Profile updated' });
+  } catch (error) {
+    return jsonResponse({ error: 'Failed to update profile' }, 500);
   }
 }
 
@@ -445,6 +497,7 @@ function getIndexHTML(): string {
     </div>
     <div class="navbar-actions">
       <button class="btn" onclick="openUpdateModal()">📊 Update My Usage</button>
+      <button class="btn btn-outline" onclick="openJoinModal()">🏆 Join Leaderboard</button>
     </div>
   </nav>
 
@@ -549,6 +602,28 @@ EOF</div>
     </div>
   </div>
 
+  <!-- Join Leaderboard Modal -->
+  <div id="joinModal" class="modal">
+    <div class="modal-content" style="max-width: 400px;">
+      <div class="modal-header">
+        <h2>Create Your Profile</h2>
+        <button class="modal-close" onclick="closeJoinModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <p style="color: #666; margin-bottom: 1.5rem;">Choose a username to join the leaderboard.</p>
+        
+        <form id="joinForm">
+          <div class="form-group">
+            <label style="color: #333;">Username</label>
+            <input type="text" id="joinUsername" placeholder="Enter your username" required style="background: #fff; color: #333; border: 1px solid #ddd;">
+          </div>
+          <button type="submit" class="btn" style="width: 100%;">Join Leaderboard</button>
+        </form>
+        <div id="joinResult" style="margin-top: 1rem;"></div>
+      </div>
+    </div>
+  </div>
+
   <script>
     // Modal controls
     function openUpdateModal() {
@@ -573,11 +648,69 @@ EOF</div>
       }
     }
 
+    function openJoinModal() {
+      document.getElementById('joinModal').classList.add('active');
+    }
+
+    function closeJoinModal() {
+      document.getElementById('joinModal').classList.remove('active');
+    }
+
     // Close modal on background click
     document.getElementById('updateModal').addEventListener('click', (e) => {
       if (e.target.id === 'updateModal') {
         closeUpdateModal();
       }
+    });
+
+    document.getElementById('joinModal').addEventListener('click', (e) => {
+      if (e.target.id === 'joinModal') {
+        closeJoinModal();
+      }
+    });
+
+    // Join Leaderboard
+    document.getElementById('joinForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('joinUsername').value;
+      
+      // Store username in localStorage
+      localStorage.setItem('burnrate_username', username);
+      
+      // Try to update via API if user has an API key
+      const apiKey = localStorage.getItem('burnrate_apikey');
+      if (apiKey) {
+        try {
+          const response = await fetch('/api/profile/update', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + apiKey
+            },
+            body: JSON.stringify({ displayName: username, isPublic: true }),
+          });
+
+          if (response.ok) {
+            document.getElementById('joinResult').innerHTML = 
+              '<p style="color: #4ade80;">✅ Profile updated! You\'re now on the leaderboard.</p>';
+          } else {
+            document.getElementById('joinResult').innerHTML = 
+              '<p style="color: #4ade80;">✅ Username saved locally!</p>' +
+              '<p style="color: #666; font-size: 0.9rem; margin-top: 0.5rem;">Register to sync your profile.</p>';
+          }
+        } catch (error) {
+          document.getElementById('joinResult').innerHTML = 
+            '<p style="color: #4ade80;">✅ Username saved locally!</p>';
+        }
+      } else {
+        document.getElementById('joinResult').innerHTML = 
+          '<p style="color: #4ade80;">✅ Username saved!</p>' +
+          '<p style="color: #666; font-size: 0.9rem; margin-top: 0.5rem;">Register and submit usage to appear on the leaderboard.</p>';
+      }
+      
+      setTimeout(() => {
+        closeJoinModal();
+      }, 2000);
     });
 
     // Registration
@@ -596,6 +729,9 @@ EOF</div>
         const data = await response.json();
 
         if (response.ok) {
+          // Store API key in localStorage
+          localStorage.setItem('burnrate_apikey', data.apiKey);
+          
           document.getElementById('result').innerHTML = 
             '<p class="success">✅ API Key generated!</p>' +
             '<div class="code-block" style="color: #333; background: rgba(0,0,0,0.05);">' + data.apiKey + '</div>' +
