@@ -1,6 +1,10 @@
 # 🔥 burnrate
 
+[![Deploy to Cloudflare Workers](https://github.com/autonomous-tech/burnrate/actions/workflows/deploy.yml/badge.svg)](https://github.com/autonomous-tech/burnrate/actions/workflows/deploy.yml)
+
 Track your Claude Code token burn rate. Competitive leaderboard for your team.
+
+**Live at:** https://burnrate.autonomoustech.ca
 
 ## Quick Start
 
