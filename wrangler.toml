@@ -2,11 +2,17 @@ name = "burnrate"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
+account_id = "12e483cac08ce486262e6cd63a88026f"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "burnrate"
-database_id = ""
+database_id = "ddf5e84d-d9d1-4d52-b978-2928cd26f93c"
 
 [vars]
 ENVIRONMENT = "development"
+
+# Custom domain
+[[routes]]
+pattern = "burnrate.autonomoustech.ca"
+custom_domain = true
