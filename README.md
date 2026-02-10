@@ -1,8 +1,8 @@
 # 🔥 burnrate
 
-[![Deploy to Cloudflare Workers](https://github.com/autonomous-tech/burnrate/actions/workflows/deploy.yml/badge.svg)](https://github.com/autonomous-tech/burnrate/actions/workflows/deploy.yml)
-
 Track your Claude Code token burn rate. Competitive leaderboard for your team.
+
+> Deploys automatically via Cloudflare on push to master.
 
 **Live at:** https://burnrate.autonomoustech.ca
 
@@ -45,7 +45,7 @@ In Cloudflare Dashboard:
 
 - `POST /api/auth/register` - Create account, get API key
 - `POST /api/usage/submit` - Submit ccusage JSON (authenticated)
-- `GET /api/leaderboard/daily` - Today's leaderboard
+- `GET /api/leaderboard/monthly` - Monthly leaderboard (with input/output token breakdown)
 - `GET /api/usage/me` - Your usage stats
 
 ## Local Development

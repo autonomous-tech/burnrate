@@ -1,7 +1,7 @@
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
-  email TEXT UNIQUE NOT NULL,
+  email TEXT UNIQUE,
   api_key TEXT UNIQUE NOT NULL,
   display_name TEXT,
   is_public INTEGER DEFAULT 0,

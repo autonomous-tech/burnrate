@@ -43,8 +43,8 @@ export default {
       return handleUsageSubmit(request, env);
     }
 
-    if (url.pathname === '/api/leaderboard/daily' && request.method === 'GET') {
-      return handleLeaderboard(request, env, 'daily');
+    if ((url.pathname === '/api/leaderboard/monthly' || url.pathname === '/api/leaderboard/daily') && request.method === 'GET') {
+      return handleLeaderboard(request, env);
     }
 
     if (url.pathname === '/api/usage/me' && request.method === 'GET') {
@@ -73,19 +73,10 @@ export default {
 
 async function handleRegister(request: Request, env: Env): Promise<Response> {
   try {
-    const body = await request.json() as { email: string; displayName?: string };
-    
-    if (!body.email) {
-      return jsonResponse({ error: 'Email required' }, 400);
-    }
+    const body = await request.json() as { displayName: string };
 
-    // Check if user exists
-    const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?')
-      .bind(body.email)
-      .first();
-
-    if (existing) {
-      return jsonResponse({ error: 'Email already registered' }, 409);
+    if (!body.displayName) {
+      return jsonResponse({ error: 'Display name required' }, 400);
     }
 
     const userId = generateId();
@@ -95,13 +86,13 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
     await env.DB.prepare(
       'INSERT INTO users (id, email, api_key, display_name, created_at) VALUES (?, ?, ?, ?, ?)'
     )
-      .bind(userId, body.email, apiKey, body.displayName || null, now)
+      .bind(userId, `${userId}@burnrate.local`, apiKey, body.displayName, now)
       .run();
 
     return jsonResponse({
       userId,
       apiKey,
-      email: body.email,
+      displayName: body.displayName,
     });
   } catch (error) {
     return jsonResponse({ error: 'Registration failed' }, 500);
@@ -130,8 +121,9 @@ async function handleUsageSubmit(request: Request, env: Env): Promise<Response> 
     // Parse ccusage JSON output
     const body = await request.json() as any;
 
-    // ccusage daily --json returns: { data: [...] }
-    const entries = body.data || [body];
+    // ccusage --json returns: { daily: [...], totals: {...} }
+    // Also support legacy { data: [...] } and flat entry formats
+    const entries: any[] = body.daily || body.data || [body];
 
     const now = Date.now();
     let inserted = 0;
@@ -139,10 +131,12 @@ async function handleUsageSubmit(request: Request, env: Env): Promise<Response> 
     for (const entry of entries) {
       const logId = generateId();
       const date = entry.date || new Date().toISOString().split('T')[0];
-      
+      const cacheCreate = entry.cacheCreationTokens || entry.cacheCreateTokens || 0;
+      const cacheRead = entry.cacheReadTokens || 0;
+
       // Insert usage log
       await env.DB.prepare(`
-        INSERT INTO usage_logs 
+        INSERT INTO usage_logs
         (id, user_id, date, model, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, cost_usd, project, submitted_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
@@ -152,16 +146,16 @@ async function handleUsageSubmit(request: Request, env: Env): Promise<Response> 
         entry.model || 'unknown',
         entry.inputTokens || 0,
         entry.outputTokens || 0,
-        entry.cacheCreateTokens || 0,
-        entry.cacheReadTokens || 0,
-        entry.cost || 0,
+        cacheCreate,
+        cacheRead,
+        entry.totalCost || entry.cost || 0,
         entry.project || null,
         now
       ).run();
 
       // Update daily stats
-      const totalTokens = (entry.inputTokens || 0) + (entry.outputTokens || 0) + 
-                         (entry.cacheCreateTokens || 0) + (entry.cacheReadTokens || 0);
+      const totalTokens = (entry.inputTokens || 0) + (entry.outputTokens || 0) +
+                         cacheCreate + cacheRead;
 
       await env.DB.prepare(`
         INSERT INTO daily_stats (user_id, date, total_tokens, total_cost)
@@ -169,7 +163,7 @@ async function handleUsageSubmit(request: Request, env: Env): Promise<Response> 
         ON CONFLICT(user_id, date) DO UPDATE SET
           total_tokens = total_tokens + excluded.total_tokens,
           total_cost = total_cost + excluded.total_cost
-      `).bind(user.id, date, totalTokens, entry.cost || 0).run();
+      `).bind(user.id, date, totalTokens, entry.totalCost || entry.cost || 0).run();
 
       inserted++;
     }
@@ -181,32 +175,38 @@ async function handleUsageSubmit(request: Request, env: Env): Promise<Response> 
   }
 }
 
-async function handleLeaderboard(request: Request, env: Env, period: string): Promise<Response> {
+async function handleLeaderboard(request: Request, env: Env): Promise<Response> {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth(); // 0-indexed
+    const monthStart = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+    const nextMonth = month === 11 ? `${year + 1}-01-01` : `${year}-${String(month + 2).padStart(2, '0')}-01`;
+    const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 
     const results = await env.DB.prepare(`
-      SELECT 
+      SELECT
         u.display_name,
-        u.email,
-        u.is_public,
-        s.total_tokens,
-        s.total_cost
-      FROM daily_stats s
-      JOIN users u ON s.user_id = u.id
-      WHERE s.date = ?
-      ORDER BY s.total_tokens DESC
-      LIMIT 10
-    `).bind(today).all();
+        SUM(l.input_tokens) as input_tokens,
+        SUM(l.output_tokens) as output_tokens,
+        SUM(l.input_tokens + l.output_tokens + l.cache_create_tokens + l.cache_read_tokens) as total_tokens
+      FROM usage_logs l
+      JOIN users u ON l.user_id = u.id
+      WHERE l.date >= ? AND l.date < ?
+      GROUP BY l.user_id
+      ORDER BY total_tokens DESC
+      LIMIT 50
+    `).bind(monthStart, nextMonth).all();
 
     const leaderboard = results.results?.map((row: any, index: number) => ({
       rank: index + 1,
-      name: row.is_public ? (row.display_name || row.email.split('@')[0]) : 'Anonymous',
-      tokens: row.total_tokens,
-      cost: row.total_cost,
+      name: row.display_name || 'Unknown',
+      input_tokens: row.input_tokens,
+      output_tokens: row.output_tokens,
+      total_tokens: row.total_tokens,
     })) || [];
 
-    return jsonResponse({ period, date: today, leaderboard });
+    return jsonResponse({ period: 'monthly', month: monthLabel, leaderboard });
   } catch (error) {
     return jsonResponse({ error: 'Failed to fetch leaderboard' }, 500);
   }
@@ -315,277 +315,449 @@ function getIndexHTML(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>burnrate - Track Your Claude Code Token Usage</title>
+  <title>Burn Rate Leaderboard</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f8f9fa;
+      color: #1a1a1a;
       min-height: 100vh;
     }
-    
-    /* Navbar */
-    .navbar {
-      background: rgba(255, 255, 255, 0.1);
-      backdrop-filter: blur(10px);
-      padding: 1rem 2rem;
+
+    /* Header */
+    .header {
+      background: #fff;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 1.25rem 2rem;
+    }
+    .header-inner {
+      max-width: 960px;
+      margin: 0 auto;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     }
-    .navbar-brand {
+    .header-left {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      font-size: 1.5rem;
-      font-weight: 600;
-    }
-    .navbar-actions {
-      display: flex;
       gap: 1rem;
     }
-    .btn {
-      background: #fff;
-      color: #667eea;
-      padding: 0.5rem 1.5rem;
+    .header-icon {
+      font-size: 1.5rem;
+    }
+    .header-title {
+      font-family: "SF Mono", "Fira Code", "Fira Mono", "Roboto Mono", monospace;
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #1a1a1a;
+    }
+    .header-subtitle {
+      font-size: 0.85rem;
+      color: #6b7280;
+      margin-top: 2px;
+    }
+    .header-actions {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
+    .btn-refresh {
+      background: none;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 0.5rem;
+      cursor: pointer;
+      color: #6b7280;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+    }
+    .btn-refresh:hover { background: #f3f4f6; }
+    .btn-refresh.spinning svg { animation: spin 1s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .btn-primary {
+      background: #22c55e;
+      color: #fff;
+      padding: 0.5rem 1.25rem;
       border-radius: 8px;
       border: none;
-      font-size: 0.9rem;
+      font-size: 0.875rem;
       font-weight: 600;
       cursor: pointer;
-      transition: transform 0.2s;
+      transition: background 0.15s;
     }
-    .btn:hover { transform: translateY(-2px); }
+    .btn-primary:hover { background: #16a34a; }
     .btn-outline {
       background: transparent;
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.3);
+      color: #374151;
+      padding: 0.5rem 1.25rem;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
     }
-    
-    .container { max-width: 1000px; margin: 0 auto; padding: 2rem; }
-    h1 { font-size: 2rem; margin-bottom: 0.5rem; }
-    h2 { font-size: 1.5rem; margin-bottom: 1rem; }
-    h3 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: 0.5rem; opacity: 0.95; }
-    .tagline { font-size: 1.2rem; opacity: 0.9; margin-bottom: 2rem; }
-    
-    .card {
-      background: rgba(255, 255, 255, 0.1);
-      backdrop-filter: blur(10px);
+    .btn-outline:hover { background: #f3f4f6; }
+
+    /* Container */
+    .container { max-width: 960px; margin: 0 auto; padding: 1.5rem 2rem; }
+
+    /* Month label */
+    .month-label {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      font-size: 0.9rem;
+      color: #6b7280;
+      margin-bottom: 1rem;
+    }
+    .month-label svg { width: 16px; height: 16px; }
+
+    /* Table */
+    .leaderboard-table {
+      width: 100%;
+      background: #fff;
       border-radius: 12px;
-      padding: 2rem;
-      margin-bottom: 2rem;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      border: 1px solid #e5e7eb;
+      overflow: hidden;
     }
-    
+    .leaderboard-table table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .leaderboard-table thead th {
+      text-align: left;
+      padding: 0.75rem 1rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: #9ca3af;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid #e5e7eb;
+      background: #fafafa;
+    }
+    .leaderboard-table thead th:nth-child(1) { width: 60px; }
+    .leaderboard-table thead th:nth-child(3),
+    .leaderboard-table thead th:nth-child(4),
+    .leaderboard-table thead th:nth-child(5) { text-align: right; }
+    .leaderboard-table tbody tr { border-bottom: 1px solid #f3f4f6; }
+    .leaderboard-table tbody tr:last-child { border-bottom: none; }
+    .leaderboard-table tbody td {
+      padding: 0.75rem 1rem;
+      font-size: 0.875rem;
+      font-family: "SF Mono", "Fira Code", "Fira Mono", "Roboto Mono", monospace;
+    }
+    .leaderboard-table tbody td:nth-child(3),
+    .leaderboard-table tbody td:nth-child(4),
+    .leaderboard-table tbody td:nth-child(5) { text-align: right; }
+    .leaderboard-table tbody td:nth-child(2) {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-weight: 500;
+    }
+
+    /* Rank styles */
+    .rank { font-weight: 700; }
+    .rank-1 { color: #ca8a04; }
+    .rank-2 { color: #6b7280; }
+    .rank-3 { color: #ea580c; }
+
+    /* Row highlights */
+    .row-gold { background: #fef3c7; }
+
+    /* Token colors */
+    .tokens-total { color: #22c55e; font-weight: 600; }
+    .tokens-muted { color: #6b7280; }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: #9ca3af;
+    }
+    .empty-state p { margin-top: 0.5rem; font-size: 0.9rem; }
+
     /* Modal */
-    .modal {
+    .modal-overlay {
       display: none;
       position: fixed;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(5px);
+      background: rgba(0, 0, 0, 0.5);
       z-index: 1000;
       align-items: center;
       justify-content: center;
     }
-    .modal.active { display: flex; }
-    .modal-content {
-      background: rgba(255, 255, 255, 0.95);
-      color: #333;
-      border-radius: 16px;
-      max-width: 600px;
+    .modal-overlay.active { display: flex; }
+    .modal {
+      background: #fff;
+      border-radius: 12px;
+      max-width: 560px;
       width: 90%;
-      max-height: 80vh;
+      max-height: 85vh;
       overflow-y: auto;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
     }
     .modal-header {
-      padding: 1.5rem;
-      border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid #e5e7eb;
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
-    .modal-header h2 { margin: 0; color: #333; }
+    .modal-header h2 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #1a1a1a;
+      margin: 0;
+    }
     .modal-close {
       background: none;
       border: none;
-      font-size: 1.5rem;
+      font-size: 1.25rem;
       cursor: pointer;
-      color: #666;
-      padding: 0;
-      width: 32px;
-      height: 32px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      color: #9ca3af;
+      padding: 4px;
+      line-height: 1;
+      border-radius: 4px;
+      transition: color 0.15s;
     }
+    .modal-close:hover { color: #374151; }
     .modal-body { padding: 1.5rem; }
-    
+
     /* Tabs */
     .tabs {
       display: flex;
-      gap: 1rem;
-      border-bottom: 2px solid rgba(0, 0, 0, 0.1);
-      margin-bottom: 1.5rem;
+      gap: 0;
+      border-bottom: 1px solid #e5e7eb;
+      margin-bottom: 1.25rem;
     }
-    .tab {
+    .tab-btn {
       background: none;
       border: none;
-      padding: 0.75rem 1.5rem;
-      font-size: 1rem;
+      padding: 0.625rem 1.25rem;
+      font-size: 0.875rem;
       font-weight: 500;
-      color: #666;
+      color: #9ca3af;
       cursor: pointer;
-      border-bottom: 3px solid transparent;
-      transition: all 0.2s;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+      margin-bottom: -1px;
     }
-    .tab.active {
-      color: #667eea;
-      border-bottom-color: #667eea;
-    }
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
-    
+    .tab-btn.active { color: #22c55e; border-bottom-color: #22c55e; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* Code block */
     .code-block {
-      background: rgba(0, 0, 0, 0.05);
-      padding: 1rem;
+      background: #f8f9fa;
+      color: #1a1a1a;
+      padding: 0.875rem 1rem;
       border-radius: 8px;
-      font-family: 'Courier New', monospace;
-      font-size: 0.85rem;
+      border: 1px solid #e5e7eb;
+      font-family: "SF Mono", "Fira Code", "Fira Mono", "Roboto Mono", monospace;
+      font-size: 0.8rem;
       overflow-x: auto;
-      margin: 1rem 0;
-      border: 1px solid rgba(0, 0, 0, 0.1);
-      color: #333;
+      margin: 0 0 0.25rem 0;
+      line-height: 1.6;
+      position: relative;
+      white-space: pre-wrap;
+      word-break: break-all;
     }
-    .code-block .highlight { background: #fef3c7; padding: 0 4px; }
-    
-    .leaderboard-item {
-      display: flex;
-      justify-content: space-between;
-      padding: 0.75rem;
-      background: rgba(255, 255, 255, 0.05);
-      margin-bottom: 0.5rem;
-      border-radius: 8px;
+    .step .code-block { margin-left: 0; }
+    .code-block .hl { color: #22c55e; font-weight: 600; }
+    .code-block .comment { color: #6b7280; }
+    .copy-btn {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      color: #6b7280;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
     }
-    .form-group { margin-bottom: 1.5rem; }
-    label { display: block; margin-bottom: 0.5rem; font-weight: 500; }
-    input {
+    .copy-btn:hover { background: #f3f4f6; color: #374151; }
+
+    /* Form */
+    .form-group { margin-bottom: 1rem; }
+    .form-label {
+      display: block;
+      margin-bottom: 0.375rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #374151;
+    }
+    .form-input {
       width: 100%;
+      padding: 0.625rem 0.75rem;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      font-size: 0.875rem;
+      color: #1a1a1a;
+      background: #fff;
+      transition: border-color 0.15s;
+    }
+    .form-input:focus { outline: none; border-color: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,0.1); }
+    .form-input::placeholder { color: #9ca3af; }
+    .btn-submit {
+      width: 100%;
+      background: #22c55e;
+      color: #fff;
+      padding: 0.625rem;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 0.5rem;
+      transition: background 0.15s;
+    }
+    .btn-submit:hover { background: #16a34a; }
+
+    .step { margin-bottom: 1.5rem; }
+    .step:last-child { margin-bottom: 0; }
+    .step-header { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 0.5rem; }
+    .step-num {
+      width: 24px; height: 24px; border-radius: 50%;
+      background: #22c55e; color: #fff;
+      font-size: 0.75rem; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .step-title { font-size: 0.875rem; font-weight: 600; color: #1a1a1a; }
+    .step-desc { font-size: 0.8rem; color: #6b7280; margin-bottom: 0.5rem; line-height: 1.5; }
+
+    .success-msg { color: #22c55e; font-weight: 500; }
+    .error-msg { color: #ef4444; font-weight: 500; }
+    .api-key-display {
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
       padding: 0.75rem;
       border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, 0.3);
-      background: rgba(255, 255, 255, 0.1);
-      color: #fff;
-      font-size: 1rem;
+      font-family: "SF Mono", monospace;
+      font-size: 0.8rem;
+      word-break: break-all;
+      margin: 0.75rem 0;
     }
-    input::placeholder { color: rgba(255, 255, 255, 0.5); }
-    .success { color: #4ade80; }
-    .error { color: #f87171; }
-    #setupInstructions { display: none; }
-    .step { margin-bottom: 1.5rem; }
-    .step h4 { color: #555; font-size: 0.9rem; margin-bottom: 0.5rem; }
-    .step p { color: #666; font-size: 0.9rem; margin-bottom: 0.5rem; }
+    .warning-text { color: #ca8a04; font-size: 0.8rem; margin-bottom: 0.75rem; }
+
+    @media (max-width: 640px) {
+      .header { flex-direction: column; gap: 1rem; padding: 1rem; }
+      .header-actions { width: 100%; justify-content: center; }
+      .container { padding: 1rem; }
+      .leaderboard-table { font-size: 0.8rem; }
+      .leaderboard-table thead th,
+      .leaderboard-table tbody td { padding: 0.5rem 0.625rem; }
+    }
   </style>
 </head>
 <body>
-  <!-- Navbar -->
-  <nav class="navbar">
-    <div class="navbar-brand">
-      <span>🔥</span>
-      <span>burnrate</span>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="header-left">
+        <span class="header-icon">&#x26A1;</span>
+        <div>
+          <div class="header-title">Burn Rate Leaderboard</div>
+          <div class="header-subtitle">Autonomous &mdash; Who&#39;s burning the most tokens?</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="btn-refresh" id="refreshBtn" title="Refresh">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+        </button>
+        <button class="btn-primary" id="updateBtn">Update My Usage</button>
+        <button class="btn-outline" id="joinBtn">Join Leaderboard</button>
+      </div>
     </div>
-    <div class="navbar-actions">
-      <button class="btn" onclick="openUpdateModal()">📊 Update My Usage</button>
-      <button class="btn btn-outline" onclick="openJoinModal()">🏆 Join Leaderboard</button>
-    </div>
-  </nav>
+  </header>
 
   <!-- Main Content -->
   <div class="container">
-    <h1>Track Your Token Burn Rate</h1>
-    <p class="tagline">Competitive leaderboard for Claude Code usage</p>
-
-    <div class="card">
-      <h2>Get Started</h2>
-      <form id="registerForm">
-        <div class="form-group">
-          <label for="email">Email</label>
-          <input type="email" id="email" placeholder="you@example.com" required>
-        </div>
-        <div class="form-group">
-          <label for="displayName">Display Name (optional)</label>
-          <input type="text" id="displayName" placeholder="Your Name">
-        </div>
-        <button type="submit" class="btn">Generate API Key</button>
-      </form>
-      <div id="result"></div>
+    <div class="month-label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <span id="monthLabel">Loading...</span>
     </div>
 
-    <div class="card">
-      <h2>Today's Leaderboard</h2>
-      <div id="leaderboardContent">Loading...</div>
+    <div class="leaderboard-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>User</th>
+            <th>Input Tokens</th>
+            <th>Output Tokens</th>
+            <th>Total Tokens</th>
+          </tr>
+        </thead>
+        <tbody id="leaderboardBody">
+          <tr><td colspan="5" class="empty-state"><div>Loading...</div></td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
   <!-- Update Usage Modal -->
-  <div id="updateModal" class="modal">
-    <div class="modal-content">
+  <div class="modal-overlay" id="updateOverlay">
+    <div class="modal">
       <div class="modal-header">
         <h2>Submit Your Usage</h2>
-        <button class="modal-close" onclick="closeUpdateModal()">×</button>
+        <button class="modal-close" id="updateClose">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="color: #666; margin-bottom: 1rem;">Use ccusage to export your Claude Code usage and submit it to the leaderboard.</p>
-        
-        <!-- Tabs -->
         <div class="tabs">
-          <button class="tab active" onclick="switchTab('manual', event)">Manual Update</button>
-          <button class="tab" onclick="switchTab('auto', event)">Auto Update</button>
+          <button class="tab-btn active" data-tab="manual">Manual Update</button>
+          <button class="tab-btn" data-tab="auto">Auto Update (Hook)</button>
         </div>
-        
-        <!-- Manual Update Tab -->
-        <div id="manualTab" class="tab-content active">
-          <p style="color: #666; margin-bottom: 1rem;">Run this command in your terminal to submit your current usage:</p>
-          <div class="code-block" id="manualCommand">npx ccusage@latest --json | curl -X POST "https://burnrate.autonomoustech.ca/api/usage/submit" \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer <span class="highlight" id="apiKeyModal1">YOUR_API_KEY</span>" \\
-  -d @-</div>
-          <p style="color: #999; font-size: 0.85rem;">Replace <strong>YOUR_API_KEY</strong> with your actual API key from registration.</p>
-        </div>
-        
-        <!-- Auto Update Tab -->
-        <div id="autoTab" class="tab-content">
-          <div class="step">
-            <h4>Step 1: Create the hook script</h4>
-            <div class="code-block">cat > ~/.claude/hooks/scripts/burnrate.sh << 'EOF'
-#!/bin/bash
-API_KEY="<span class="highlight" id="apiKeyModal2">YOUR_API_KEY</span>"
-API_URL="https://burnrate.autonomoustech.ca/api/usage/submit"
 
-npx ccusage@latest --json | curl -X POST "$API_URL" \\
+        <!-- Manual Tab -->
+        <div class="tab-panel active" id="panel-manual">
+          <p style="color: #6b7280; font-size: 0.85rem; margin-bottom: 1rem; line-height: 1.5;">Run this command in your terminal to submit your usage:</p>
+          <div class="code-block" id="manualCodeBlock">npx ccusage@latest --json | curl -X POST \\
+  "https://burnrate.autonomoustech.ca/api/usage/submit" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer <span class="hl" id="apiKeySlot1">YOUR_API_KEY</span>" \\
+  -d @-<button class="copy-btn" id="copyManualBtn">Copy</button></div>
+        </div>
+
+        <!-- Auto Tab -->
+        <div class="tab-panel" id="panel-auto">
+          <p style="color: #6b7280; font-size: 0.85rem; margin-bottom: 1.25rem; line-height: 1.5;">Automatically submit your usage every time a Claude Code session ends.</p>
+
+          <div class="step">
+            <div class="step-header"><span class="step-num">1</span><span class="step-title">Create the script directory</span></div>
+            <div class="code-block">mkdir -p ~/.claude/hooks/scripts<button class="copy-btn" data-copy="mkdir -p ~/.claude/hooks/scripts">Copy</button></div>
+          </div>
+
+          <div class="step">
+            <div class="step-header"><span class="step-num">2</span><span class="step-title">Create the hook script</span></div>
+            <div class="step-desc">This script runs ccusage and sends the data to burnrate.</div>
+            <div class="code-block"><span class="comment">#!/bin/bash</span>
+API_KEY="<span class="hl" id="apiKeySlot2">YOUR_API_KEY</span>"
+
+npx ccusage@latest --json | curl -s -X POST \\
+  "https://burnrate.autonomoustech.ca/api/usage/submit" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
-  -d @-
+  -d @-<button class="copy-btn" id="copyScriptBtn">Copy</button></div>
+            <div class="step-desc">Save this as <strong>~/.claude/hooks/scripts/burnrate.sh</strong>, then make it executable:</div>
+            <div class="code-block">chmod +x ~/.claude/hooks/scripts/burnrate.sh<button class="copy-btn" data-copy="chmod +x ~/.claude/hooks/scripts/burnrate.sh">Copy</button></div>
+          </div>
 
-echo "✅ Usage submitted to burnrate"
-EOF</div>
-          </div>
-          
           <div class="step">
-            <h4>Step 2: Make it executable</h4>
-            <div class="code-block">chmod +x ~/.claude/hooks/scripts/burnrate.sh</div>
-          </div>
-          
-          <div class="step">
-            <h4>Step 3: Configure Claude Code hooks</h4>
-            <div class="code-block">cat > ~/.claude/settings.json << 'EOF'
-{
+            <div class="step-header"><span class="step-num">3</span><span class="step-title">Add the hook to Claude Code</span></div>
+            <div class="step-desc">Add this to your <strong>~/.claude/settings.json</strong> to run the script on every session end:</div>
+            <div class="code-block">{
   "hooks": {
     "SessionEnd": [
       {
@@ -594,13 +766,13 @@ EOF</div>
       }
     ]
   }
-}
-EOF</div>
+}<button class="copy-btn" id="copyHookBtn">Copy</button></div>
           </div>
-          
+
           <div class="step">
-            <h4>Step 4: Test it</h4>
-            <div class="code-block">~/.claude/hooks/scripts/burnrate.sh</div>
+            <div class="step-header"><span class="step-num">4</span><span class="step-title">Test it</span></div>
+            <div class="step-desc">Run the script manually to make sure it works:</div>
+            <div class="code-block">~/.claude/hooks/scripts/burnrate.sh<button class="copy-btn" data-copy="~/.claude/hooks/scripts/burnrate.sh">Copy</button></div>
           </div>
         </div>
       </div>
@@ -608,21 +780,19 @@ EOF</div>
   </div>
 
   <!-- Join Leaderboard Modal -->
-  <div id="joinModal" class="modal">
-    <div class="modal-content" style="max-width: 400px;">
+  <div class="modal-overlay" id="joinOverlay">
+    <div class="modal" style="max-width: 420px;">
       <div class="modal-header">
-        <h2>Create Your Profile</h2>
-        <button class="modal-close" onclick="closeJoinModal()">×</button>
+        <h2 id="joinTitle">Create Your Profile</h2>
+        <button class="modal-close" id="joinClose">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="color: #666; margin-bottom: 1.5rem;">Choose a username to join the leaderboard.</p>
-        
         <form id="joinForm">
           <div class="form-group">
-            <label style="color: #333;">Username</label>
-            <input type="text" id="joinUsername" placeholder="Enter your username" required style="background: #fff; color: #333; border: 1px solid #ddd;">
+            <label class="form-label" for="joinUsername">Username</label>
+            <input class="form-input" type="text" id="joinUsername" placeholder="Display name for leaderboard" required>
           </div>
-          <button type="submit" class="btn" style="width: 100%;">Join Leaderboard</button>
+          <button type="submit" class="btn-submit" id="joinSubmitBtn">Create Profile</button>
         </form>
         <div id="joinResult" style="margin-top: 1rem;"></div>
       </div>
@@ -630,158 +800,219 @@ EOF</div>
   </div>
 
   <script>
-    // Modal controls
-    function openUpdateModal() {
-      document.getElementById('updateModal').classList.add('active');
+    // --- Utility ---
+    function formatTokens(n) {
+      if (n == null) return "0";
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+      if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+      if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
+      return n.toString();
     }
 
-    function closeUpdateModal() {
-      document.getElementById('updateModal').classList.remove('active');
+    // --- Modal management ---
+    function openModal(id) {
+      document.getElementById(id).classList.add("active");
+    }
+    function closeModal(id) {
+      document.getElementById(id).classList.remove("active");
     }
 
-    function switchTab(tab, event) {
-      // Update tab buttons
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      event.target.classList.add('active');
-      
-      // Update tab content
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      if (tab === 'manual') {
-        document.getElementById('manualTab').classList.add('active');
+    // Header buttons
+    document.getElementById("updateBtn").addEventListener("click", function() {
+      var stored = localStorage.getItem("burnrate_apikey");
+      if (stored) {
+        document.getElementById("apiKeySlot1").textContent = stored;
+        document.getElementById("apiKeySlot2").textContent = stored;
+      }
+      openModal("updateOverlay");
+    });
+    document.getElementById("joinBtn").addEventListener("click", function() {
+      var hasKey = localStorage.getItem("burnrate_apikey");
+      var titleEl = document.getElementById("joinTitle");
+      var submitBtn = document.getElementById("joinSubmitBtn");
+      document.getElementById("joinResult").innerHTML = "";
+      if (hasKey) {
+        titleEl.textContent = "Update Your Profile";
+        submitBtn.textContent = "Update Profile";
       } else {
-        document.getElementById('autoTab').classList.add('active');
+        titleEl.textContent = "Create Your Profile";
+        submitBtn.textContent = "Create Profile";
       }
-    }
-
-    function openJoinModal() {
-      document.getElementById('joinModal').classList.add('active');
-    }
-
-    function closeJoinModal() {
-      document.getElementById('joinModal').classList.remove('active');
-    }
-
-    // Close modal on background click
-    document.getElementById('updateModal').addEventListener('click', (e) => {
-      if (e.target.id === 'updateModal') {
-        closeUpdateModal();
-      }
+      openModal("joinOverlay");
+    });
+    document.getElementById("refreshBtn").addEventListener("click", function() {
+      this.classList.add("spinning");
+      loadLeaderboard().finally(function() {
+        document.getElementById("refreshBtn").classList.remove("spinning");
+      });
     });
 
-    document.getElementById('joinModal').addEventListener('click', (e) => {
-      if (e.target.id === 'joinModal') {
-        closeJoinModal();
-      }
+    // Close buttons
+    document.getElementById("updateClose").addEventListener("click", function() {
+      closeModal("updateOverlay");
+    });
+    document.getElementById("joinClose").addEventListener("click", function() {
+      closeModal("joinOverlay");
     });
 
-    // Join Leaderboard
-    document.getElementById('joinForm').addEventListener('submit', async (e) => {
+    // Close on backdrop click
+    document.getElementById("updateOverlay").addEventListener("click", function(e) {
+      if (e.target === this) closeModal("updateOverlay");
+    });
+    document.getElementById("joinOverlay").addEventListener("click", function(e) {
+      if (e.target === this) closeModal("joinOverlay");
+    });
+
+    // --- Tabs ---
+    document.querySelectorAll(".tab-btn").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        var tabName = this.getAttribute("data-tab");
+        // Update buttons
+        this.parentElement.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
+        this.classList.add("active");
+        // Update panels
+        var panels = this.closest(".modal-body").querySelectorAll(".tab-panel");
+        panels.forEach(function(p) { p.classList.remove("active"); });
+        document.getElementById("panel-" + tabName).classList.add("active");
+      });
+    });
+
+    // --- Copy buttons ---
+    document.querySelectorAll(".copy-btn").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        var text = this.getAttribute("data-copy");
+        if (!text) {
+          // Fall back to parent code-block text content
+          text = this.parentElement.textContent.replace("Copy", "").replace("Copied!", "").trim();
+        }
+        var el = this;
+        navigator.clipboard.writeText(text).then(function() {
+          el.textContent = "Copied!";
+          setTimeout(function() { el.textContent = "Copy"; }, 2000);
+        });
+      });
+    });
+
+    // --- Join / Register form ---
+    document.getElementById("joinForm").addEventListener("submit", function(e) {
       e.preventDefault();
-      const username = document.getElementById('joinUsername').value;
-      
-      // Store username in localStorage
-      localStorage.setItem('burnrate_username', username);
-      
-      // Try to update via API if user has an API key
-      const apiKey = localStorage.getItem('burnrate_apikey');
+      var username = document.getElementById("joinUsername").value;
+      var resultEl = document.getElementById("joinResult");
+      var submitBtn = document.getElementById("joinSubmitBtn");
+      var apiKey = localStorage.getItem("burnrate_apikey");
+
+      submitBtn.disabled = true;
+
+      // If user already has an API key, update profile instead
       if (apiKey) {
-        try {
-          const response = await fetch('/api/profile/update', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ' + apiKey
-            },
-            body: JSON.stringify({ displayName: username, isPublic: true }),
+        submitBtn.textContent = "Updating...";
+        fetch("/api/profile/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey },
+          body: JSON.stringify({ displayName: username, isPublic: true })
+        })
+        .then(function(resp) { return resp.json().then(function(d) { return { ok: resp.ok, data: d }; }); })
+        .then(function(result) {
+          if (result.ok) {
+            localStorage.setItem("burnrate_username", username);
+            resultEl.innerHTML = "<p class=\\"success-msg\\">Profile updated!</p>";
+            setTimeout(function() { closeModal("joinOverlay"); loadLeaderboard(); }, 1500);
+          } else {
+            resultEl.innerHTML = "<p class=\\"error-msg\\">" + result.data.error + "</p>";
+          }
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Update Profile";
+        })
+        .catch(function() {
+          resultEl.innerHTML = "<p class=\\"error-msg\\">Update failed. Please try again.</p>";
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Update Profile";
+        });
+        return;
+      }
+
+      submitBtn.textContent = "Creating...";
+
+      fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName: username })
+      })
+      .then(function(resp) { return resp.json().then(function(d) { return { ok: resp.ok, data: d }; }); })
+      .then(function(result) {
+        if (result.ok) {
+          localStorage.setItem("burnrate_apikey", result.data.apiKey);
+          localStorage.setItem("burnrate_username", username);
+          document.getElementById("apiKeySlot1").textContent = result.data.apiKey;
+          document.getElementById("apiKeySlot2").textContent = result.data.apiKey;
+          resultEl.innerHTML =
+            "<p class=\\"success-msg\\">Profile created!</p>" +
+            "<div class=\\"api-key-display\\">" + result.data.apiKey + "</div>" +
+            "<p class=\\"warning-text\\">Save this API key &mdash; you won&#39;t see it again!</p>" +
+            "<button class=\\"btn-submit\\" id=\\"viewSetupBtn\\">View Setup Instructions</button>";
+          document.getElementById("viewSetupBtn").addEventListener("click", function() {
+            closeModal("joinOverlay");
+            openModal("updateOverlay");
+          });
+        } else {
+          resultEl.innerHTML = "<p class=\\"error-msg\\">" + result.data.error + "</p>";
+        }
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Create Profile";
+      })
+      .catch(function() {
+        resultEl.innerHTML = "<p class=\\"error-msg\\">Registration failed. Please try again.</p>";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Create Profile";
+      });
+    });
+
+    // --- Leaderboard ---
+    function loadLeaderboard() {
+      return fetch("/api/leaderboard/monthly")
+        .then(function(resp) { return resp.json(); })
+        .then(function(data) {
+          // Update month label
+          if (data.month) {
+            document.getElementById("monthLabel").textContent = data.month + " Leaderboard";
+          }
+
+          var tbody = document.getElementById("leaderboardBody");
+          if (!data.leaderboard || data.leaderboard.length === 0) {
+            tbody.innerHTML = "<tr><td colspan=\\"5\\" style=\\"text-align:center;padding:3rem 1rem;color:#9ca3af;\\">No entries yet. Be the first to submit your usage!</td></tr>";
+            return;
+          }
+
+          var html = "";
+          data.leaderboard.forEach(function(item) {
+            var rankClass = "";
+            var rowClass = "";
+            var rankPrefix = "";
+            var totalSuffix = "";
+
+            if (item.rank === 1) { rankClass = "rank-1"; rowClass = "row-gold"; rankPrefix = "&#x1F451; "; totalSuffix = " &#x1F525;"; }
+            else if (item.rank === 2) { rankClass = "rank-2"; }
+            else if (item.rank === 3) { rankClass = "rank-3"; }
+
+            html += "<tr class=\\"" + rowClass + "\\">" +
+              "<td><span class=\\"rank " + rankClass + "\\">" + rankPrefix + "#" + item.rank + "</span></td>" +
+              "<td>" + item.name + "</td>" +
+              "<td class=\\"tokens-muted\\">" + formatTokens(item.input_tokens) + "</td>" +
+              "<td class=\\"tokens-muted\\">" + formatTokens(item.output_tokens) + "</td>" +
+              "<td class=\\"tokens-total\\">" + formatTokens(item.total_tokens) + totalSuffix + "</td>" +
+              "</tr>";
           });
 
-          if (response.ok) {
-            document.getElementById('joinResult').innerHTML = 
-              '<p style="color: #4ade80;">✅ Profile updated! You\'re now on the leaderboard.</p>';
-          } else {
-            document.getElementById('joinResult').innerHTML = 
-              '<p style="color: #4ade80;">✅ Username saved locally!</p>' +
-              '<p style="color: #666; font-size: 0.9rem; margin-top: 0.5rem;">Register to sync your profile.</p>';
-          }
-        } catch (error) {
-          document.getElementById('joinResult').innerHTML = 
-            '<p style="color: #4ade80;">✅ Username saved locally!</p>';
-        }
-      } else {
-        document.getElementById('joinResult').innerHTML = 
-          '<p style="color: #4ade80;">✅ Username saved!</p>' +
-          '<p style="color: #666; font-size: 0.9rem; margin-top: 0.5rem;">Register and submit usage to appear on the leaderboard.</p>';
-      }
-      
-      setTimeout(() => {
-        closeJoinModal();
-      }, 2000);
-    });
-
-    // Registration
-    document.getElementById('registerForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const email = document.getElementById('email').value;
-      const displayName = document.getElementById('displayName').value;
-
-      try {
-        const response = await fetch('/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, displayName: displayName || null }),
+          tbody.innerHTML = html;
+        })
+        .catch(function() {
+          document.getElementById("leaderboardBody").innerHTML =
+            "<tr><td colspan=\\"5\\" style=\\"text-align:center;padding:2rem;color:#ef4444;\\">Failed to load leaderboard</td></tr>";
         });
-
-        const data = await response.json();
-
-        if (response.ok) {
-          // Store API key in localStorage
-          localStorage.setItem('burnrate_apikey', data.apiKey);
-          
-          document.getElementById('result').innerHTML = 
-            '<p class="success">✅ API Key generated!</p>' +
-            '<div class="code-block" style="color: #333; background: rgba(0,0,0,0.05);">' + data.apiKey + '</div>' +
-            "<p style=\"color: #fef3c7;\">⚠️ Save this key - you won't see it again!</p>" +
-            '<button class="btn" onclick="openUpdateModal(); updateApiKeyPlaceholders(\''+data.apiKey+'\')">View Setup Instructions</button>';
-          
-          // Scroll to result
-          document.getElementById('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        } else {
-          document.getElementById('result').innerHTML = 
-            '<p class="error">❌ ' + data.error + '</p>';
-        }
-      } catch (error) {
-        document.getElementById('result').innerHTML = 
-          '<p class="error">❌ Registration failed</p>';
-      }
-    });
-
-    // Update API key placeholders in modal
-    function updateApiKeyPlaceholders(apiKey) {
-      document.getElementById('apiKeyModal1').textContent = apiKey;
-      document.getElementById('apiKeyModal2').textContent = apiKey;
-    }
-
-    // Load leaderboard
-    async function loadLeaderboard() {
-      try {
-        const response = await fetch('/api/leaderboard/daily');
-        const data = await response.json();
-        
-        const html = data.leaderboard.map(item => 
-          '<div class="leaderboard-item">' +
-          '<span>' + item.rank + '. ' + item.name + '</span>' +
-          '<span>' + item.tokens.toLocaleString() + ' tokens ($' + item.cost.toFixed(2) + ')</span>' +
-          '</div>'
-        ).join('');
-
-        document.getElementById('leaderboardContent').innerHTML = html || '<p>No entries yet - be the first!</p>';
-      } catch (error) {
-        document.getElementById('leaderboardContent').innerHTML = '<p>Failed to load leaderboard</p>';
-      }
     }
 
     loadLeaderboard();
-    setInterval(loadLeaderboard, 30000); // Refresh every 30s
+    setInterval(loadLeaderboard, 30000);
   </script>
 </body>
 </html>`;
