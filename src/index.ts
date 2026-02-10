@@ -266,13 +266,53 @@ function getIndexHTML(): string {
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       color: #fff;
       min-height: 100vh;
-      padding: 2rem;
     }
-    .container { max-width: 800px; margin: 0 auto; }
-    h1 { font-size: 3rem; margin-bottom: 1rem; }
+    
+    /* Navbar */
+    .navbar {
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .navbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+    .navbar-actions {
+      display: flex;
+      gap: 1rem;
+    }
+    .btn {
+      background: #fff;
+      color: #667eea;
+      padding: 0.5rem 1.5rem;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    .btn:hover { transform: translateY(-2px); }
+    .btn-outline {
+      background: transparent;
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+    }
+    
+    .container { max-width: 1000px; margin: 0 auto; padding: 2rem; }
+    h1 { font-size: 2rem; margin-bottom: 0.5rem; }
     h2 { font-size: 1.5rem; margin-bottom: 1rem; }
     h3 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: 0.5rem; opacity: 0.95; }
-    .tagline { font-size: 1.5rem; opacity: 0.9; margin-bottom: 3rem; }
+    .tagline { font-size: 1.2rem; opacity: 0.9; margin-bottom: 2rem; }
+    
     .card {
       background: rgba(255, 255, 255, 0.1);
       backdrop-filter: blur(10px);
@@ -280,6 +320,101 @@ function getIndexHTML(): string {
       padding: 2rem;
       margin-bottom: 2rem;
       border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    
+    /* Modal */
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(5px);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal.active { display: flex; }
+    .modal-content {
+      background: rgba(255, 255, 255, 0.95);
+      color: #333;
+      border-radius: 16px;
+      max-width: 600px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    }
+    .modal-header {
+      padding: 1.5rem;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .modal-header h2 { margin: 0; color: #333; }
+    .modal-close {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      color: #666;
+      padding: 0;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-body { padding: 1.5rem; }
+    
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 1rem;
+      border-bottom: 2px solid rgba(0, 0, 0, 0.1);
+      margin-bottom: 1.5rem;
+    }
+    .tab {
+      background: none;
+      border: none;
+      padding: 0.75rem 1.5rem;
+      font-size: 1rem;
+      font-weight: 500;
+      color: #666;
+      cursor: pointer;
+      border-bottom: 3px solid transparent;
+      transition: all 0.2s;
+    }
+    .tab.active {
+      color: #667eea;
+      border-bottom-color: #667eea;
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    
+    .code-block {
+      background: rgba(0, 0, 0, 0.05);
+      padding: 1rem;
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.85rem;
+      overflow-x: auto;
+      margin: 1rem 0;
+      border: 1px solid rgba(0, 0, 0, 0.1);
+      color: #333;
+    }
+    .code-block .highlight { background: #fef3c7; padding: 0 4px; }
+    
+    .leaderboard-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.75rem;
+      background: rgba(255, 255, 255, 0.05);
+      margin-bottom: 0.5rem;
+      border-radius: 8px;
     }
     .form-group { margin-bottom: 1.5rem; }
     label { display: block; margin-bottom: 0.5rem; font-weight: 500; }
@@ -293,45 +428,30 @@ function getIndexHTML(): string {
       font-size: 1rem;
     }
     input::placeholder { color: rgba(255, 255, 255, 0.5); }
-    button {
-      background: #fff;
-      color: #667eea;
-      padding: 0.75rem 2rem;
-      border-radius: 8px;
-      border: none;
-      font-size: 1rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: transform 0.2s;
-    }
-    button:hover { transform: translateY(-2px); }
-    .code-block {
-      background: rgba(0, 0, 0, 0.3);
-      padding: 1rem;
-      border-radius: 8px;
-      font-family: 'Courier New', monospace;
-      font-size: 0.9rem;
-      overflow-x: auto;
-      margin: 1rem 0;
-    }
     .success { color: #4ade80; }
     .error { color: #f87171; }
     #setupInstructions { display: none; }
-    .leaderboard { margin-top: 2rem; }
-    .leaderboard-item {
-      display: flex;
-      justify-content: space-between;
-      padding: 0.75rem;
-      background: rgba(255, 255, 255, 0.05);
-      margin-bottom: 0.5rem;
-      border-radius: 8px;
-    }
+    .step { margin-bottom: 1.5rem; }
+    .step h4 { color: #555; font-size: 0.9rem; margin-bottom: 0.5rem; }
+    .step p { color: #666; font-size: 0.9rem; margin-bottom: 0.5rem; }
   </style>
 </head>
 <body>
+  <!-- Navbar -->
+  <nav class="navbar">
+    <div class="navbar-brand">
+      <span>🔥</span>
+      <span>burnrate</span>
+    </div>
+    <div class="navbar-actions">
+      <button class="btn" onclick="openUpdateModal()">📊 Update My Usage</button>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
   <div class="container">
-    <h1>🔥 burnrate</h1>
-    <p class="tagline">Track your Claude Code token burn rate</p>
+    <h1>Track Your Token Burn Rate</h1>
+    <p class="tagline">Competitive leaderboard for Claude Code usage</p>
 
     <div class="card">
       <h2>Get Started</h2>
@@ -344,19 +464,50 @@ function getIndexHTML(): string {
           <label for="displayName">Display Name (optional)</label>
           <input type="text" id="displayName" placeholder="Your Name">
         </div>
-        <button type="submit">Generate API Key</button>
+        <button type="submit" class="btn">Generate API Key</button>
       </form>
       <div id="result"></div>
     </div>
 
-    <div id="setupInstructions" class="card">
-      <h2>Setup Instructions</h2>
-      
-      <h3>Step 1: Create hook script</h3>
-      <p>Copy and paste this entire command:</p>
-      <div class="code-block" id="hookScript">cat > ~/.claude/hooks/scripts/burnrate.sh << 'EOF'
+    <div class="card">
+      <h2>Today's Leaderboard</h2>
+      <div id="leaderboardContent">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Update Usage Modal -->
+  <div id="updateModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Submit Your Usage</h2>
+        <button class="modal-close" onclick="closeUpdateModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <p style="color: #666; margin-bottom: 1rem;">Use ccusage to export your Claude Code usage and submit it to the leaderboard.</p>
+        
+        <!-- Tabs -->
+        <div class="tabs">
+          <button class="tab active" onclick="switchTab('manual')">Manual Update</button>
+          <button class="tab" onclick="switchTab('auto')">Auto Update</button>
+        </div>
+        
+        <!-- Manual Update Tab -->
+        <div id="manualTab" class="tab-content active">
+          <p style="color: #666; margin-bottom: 1rem;">Run this command in your terminal to submit your current usage:</p>
+          <div class="code-block" id="manualCommand">npx ccusage@latest --json | curl -X POST "https://burnrate.autonomoustech.ca/api/usage/submit" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer <span class="highlight" id="apiKeyModal1">YOUR_API_KEY</span>" \\
+  -d @-</div>
+          <p style="color: #999; font-size: 0.85rem;">Replace <strong>YOUR_API_KEY</strong> with your actual API key from registration.</p>
+        </div>
+        
+        <!-- Auto Update Tab -->
+        <div id="autoTab" class="tab-content">
+          <div class="step">
+            <h4>Step 1: Create the hook script</h4>
+            <div class="code-block">cat > ~/.claude/hooks/scripts/burnrate.sh << 'EOF'
 #!/bin/bash
-API_KEY="<span id="apiKeyPlaceholder"></span>"
+API_KEY="<span class="highlight" id="apiKeyModal2">YOUR_API_KEY</span>"
 API_URL="https://burnrate.autonomoustech.ca/api/usage/submit"
 
 npx ccusage@latest --json | curl -X POST "$API_URL" \\
@@ -366,12 +517,16 @@ npx ccusage@latest --json | curl -X POST "$API_URL" \\
 
 echo "✅ Usage submitted to burnrate"
 EOF</div>
-      
-      <h3>Step 2: Make it executable</h3>
-      <div class="code-block">chmod +x ~/.claude/hooks/scripts/burnrate.sh</div>
-
-      <h3>Step 3: Configure Claude Code hooks</h3>
-      <div class="code-block">cat > ~/.claude/settings.json << 'EOF'
+          </div>
+          
+          <div class="step">
+            <h4>Step 2: Make it executable</h4>
+            <div class="code-block">chmod +x ~/.claude/hooks/scripts/burnrate.sh</div>
+          </div>
+          
+          <div class="step">
+            <h4>Step 3: Configure Claude Code hooks</h4>
+            <div class="code-block">cat > ~/.claude/settings.json << 'EOF'
 {
   "hooks": {
     "SessionEnd": [
@@ -383,18 +538,49 @@ EOF</div>
   }
 }
 EOF</div>
-
-      <h3>Step 4: Test it</h3>
-      <div class="code-block">~/.claude/hooks/scripts/burnrate.sh</div>
-    </div>
-
-    <div class="card leaderboard">
-      <h2>Today's Leaderboard</h2>
-      <div id="leaderboardContent">Loading...</div>
+          </div>
+          
+          <div class="step">
+            <h4>Step 4: Test it</h4>
+            <div class="code-block">~/.claude/hooks/scripts/burnrate.sh</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
   <script>
+    // Modal controls
+    function openUpdateModal() {
+      document.getElementById('updateModal').classList.add('active');
+    }
+
+    function closeUpdateModal() {
+      document.getElementById('updateModal').classList.remove('active');
+    }
+
+    function switchTab(tab) {
+      // Update tab buttons
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      event.target.classList.add('active');
+      
+      // Update tab content
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      if (tab === 'manual') {
+        document.getElementById('manualTab').classList.add('active');
+      } else {
+        document.getElementById('autoTab').classList.add('active');
+      }
+    }
+
+    // Close modal on background click
+    document.getElementById('updateModal').addEventListener('click', (e) => {
+      if (e.target.id === 'updateModal') {
+        closeUpdateModal();
+      }
+    });
+
+    // Registration
     document.getElementById('registerForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const email = document.getElementById('email').value;
@@ -412,11 +598,12 @@ EOF</div>
         if (response.ok) {
           document.getElementById('result').innerHTML = 
             '<p class="success">✅ API Key generated!</p>' +
-            '<div class="code-block">' + data.apiKey + '</div>' +
-            '<p>⚠️ Save this key - you won\\'t see it again!</p>';
+            '<div class="code-block" style="color: #333; background: rgba(0,0,0,0.05);">' + data.apiKey + '</div>' +
+            '<p style="color: #fef3c7;">⚠️ Save this key - you won\\'t see it again!</p>' +
+            '<button class="btn" onclick="openUpdateModal(); updateApiKeyPlaceholders(\\''+data.apiKey+'\\')">View Setup Instructions</button>';
           
-          document.getElementById('apiKeyPlaceholder').textContent = data.apiKey;
-          document.getElementById('setupInstructions').style.display = 'block';
+          // Scroll to result
+          document.getElementById('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } else {
           document.getElementById('result').innerHTML = 
             '<p class="error">❌ ' + data.error + '</p>';
@@ -426,6 +613,12 @@ EOF</div>
           '<p class="error">❌ Registration failed</p>';
       }
     });
+
+    // Update API key placeholders in modal
+    function updateApiKeyPlaceholders(apiKey) {
+      document.getElementById('apiKeyModal1').textContent = apiKey;
+      document.getElementById('apiKeyModal2').textContent = apiKey;
+    }
 
     // Load leaderboard
     async function loadLeaderboard() {
