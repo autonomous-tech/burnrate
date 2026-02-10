@@ -58,7 +58,12 @@ export default {
     // Serve static HTML for root
     if (url.pathname === '/') {
       return new Response(getIndexHTML(), {
-        headers: { 'Content-Type': 'text/html' },
+        headers: { 
+          'Content-Type': 'text/html',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+        },
       });
     }
 
