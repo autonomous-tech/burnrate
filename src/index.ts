@@ -270,6 +270,8 @@ function getIndexHTML(): string {
     }
     .container { max-width: 800px; margin: 0 auto; }
     h1 { font-size: 3rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.5rem; margin-bottom: 1rem; }
+    h3 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: 0.5rem; opacity: 0.95; }
     .tagline { font-size: 1.5rem; opacity: 0.9; margin-bottom: 3rem; }
     .card {
       background: rgba(255, 255, 255, 0.1);
@@ -349,9 +351,10 @@ function getIndexHTML(): string {
 
     <div id="setupInstructions" class="card">
       <h2>Setup Instructions</h2>
-      <p>1. Create hook script:</p>
-      <div class="code-block">mkdir -p ~/.claude/hooks/scripts
-cat > ~/.claude/hooks/scripts/burnrate.sh << 'EOF'
+      
+      <h3>Step 1: Create hook script</h3>
+      <p>Copy and paste this entire command:</p>
+      <div class="code-block" id="hookScript">cat > ~/.claude/hooks/scripts/burnrate.sh << 'EOF'
 #!/bin/bash
 API_KEY="<span id="apiKeyPlaceholder"></span>"
 API_URL="https://burnrate.autonomoustech.ca/api/usage/submit"
@@ -362,10 +365,12 @@ npx ccusage@latest --json | curl -X POST "$API_URL" \\
   -d @-
 
 echo "✅ Usage submitted to burnrate"
-EOF
-chmod +x ~/.claude/hooks/scripts/burnrate.sh</div>
+EOF</div>
+      
+      <h3>Step 2: Make it executable</h3>
+      <div class="code-block">chmod +x ~/.claude/hooks/scripts/burnrate.sh</div>
 
-      <p>2. Configure Claude Code hooks:</p>
+      <h3>Step 3: Configure Claude Code hooks</h3>
       <div class="code-block">cat > ~/.claude/settings.json << 'EOF'
 {
   "hooks": {
@@ -379,7 +384,7 @@ chmod +x ~/.claude/hooks/scripts/burnrate.sh</div>
 }
 EOF</div>
 
-      <p>3. Test it:</p>
+      <h3>Step 4: Test it</h3>
       <div class="code-block">~/.claude/hooks/scripts/burnrate.sh</div>
     </div>
 
