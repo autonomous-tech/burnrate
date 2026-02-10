@@ -740,8 +740,8 @@ EOF</div>
           document.getElementById('result').innerHTML = 
             '<p class="success">✅ API Key generated!</p>' +
             '<div class="code-block" style="color: #333; background: rgba(0,0,0,0.05);">' + data.apiKey + '</div>' +
-            '<p style="color: #fef3c7;">⚠️ Save this key - you won\\'t see it again!</p>' +
-            '<button class="btn" onclick="openUpdateModal(); updateApiKeyPlaceholders(\\''+data.apiKey+'\\')">View Setup Instructions</button>';
+            "<p style=\"color: #fef3c7;\">⚠️ Save this key - you won't see it again!</p>" +
+            '<button class="btn" onclick="openUpdateModal(); updateApiKeyPlaceholders(\''+data.apiKey+'\')">View Setup Instructions</button>';
           
           // Scroll to result
           document.getElementById('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
