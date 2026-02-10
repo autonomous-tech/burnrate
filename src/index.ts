@@ -540,8 +540,8 @@ function getIndexHTML(): string {
         
         <!-- Tabs -->
         <div class="tabs">
-          <button class="tab active" onclick="switchTab('manual')">Manual Update</button>
-          <button class="tab" onclick="switchTab('auto')">Auto Update</button>
+          <button class="tab active" onclick="switchTab('manual', event)">Manual Update</button>
+          <button class="tab" onclick="switchTab('auto', event)">Auto Update</button>
         </div>
         
         <!-- Manual Update Tab -->
@@ -634,7 +634,7 @@ EOF</div>
       document.getElementById('updateModal').classList.remove('active');
     }
 
-    function switchTab(tab) {
+    function switchTab(tab, event) {
       // Update tab buttons
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       event.target.classList.add('active');
