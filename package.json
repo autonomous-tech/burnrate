@@ -1,0 +1,21 @@
+{
+  "name": "burnrate",
+  "version": "1.0.0",
+  "description": "Track your Claude Code token burn rate",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create burnrate",
+    "db:init": "wrangler d1 execute burnrate --local --file=./schema.sql",
+    "db:init:prod": "wrangler d1 execute burnrate --remote --file=./schema.sql"
+  },
+  "keywords": ["claude", "tokens", "leaderboard"],
+  "author": "Autonomous Technologies",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.101.0"
+  }
+}
