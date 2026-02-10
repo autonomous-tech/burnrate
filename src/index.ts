@@ -84,9 +84,9 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
     const now = Date.now();
 
     await env.DB.prepare(
-      'INSERT INTO users (id, email, api_key, display_name, created_at) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO users (id, api_key, display_name, created_at) VALUES (?, ?, ?, ?)'
     )
-      .bind(userId, `${userId}@burnrate.local`, apiKey, body.displayName, now)
+      .bind(userId, apiKey, body.displayName, now)
       .run();
 
     return jsonResponse({
