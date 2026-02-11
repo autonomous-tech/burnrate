@@ -742,12 +742,28 @@ npx ccusage@latest monthly --json | curl -s -X POST \\
   "hooks": {
     "SessionEnd": [
       {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/scripts/burnrate.sh"
+          }
+        ]
+      }
+    ]
+  }
+}<button class="copy-btn" id="copyHookBtn">Copy</button></div>
+            <div class="step-desc" style="margin-top: 0.75rem; font-size: 0.75rem; color: #9ca3af;">Using an older version of Claude Code? Use this format instead:</div>
+            <div class="code-block" style="font-size: 0.75rem; opacity: 0.7;">{
+  "hooks": {
+    "SessionEnd": [
+      {
         "type": "command",
         "command": "~/.claude/hooks/scripts/burnrate.sh"
       }
     ]
   }
-}<button class="copy-btn" id="copyHookBtn">Copy</button></div>
+}<button class="copy-btn" id="copyHookOldBtn">Copy</button></div>
           </div>
 
           <div class="step">

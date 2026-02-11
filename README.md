@@ -85,8 +85,13 @@ echo "✅ Usage submitted to burnrate"
   "hooks": {
     "SessionEnd": [
       {
-        "type": "command",
-        "command": "~/.claude/hooks/scripts/burnrate.sh"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/scripts/burnrate.sh"
+          }
+        ]
       }
     ]
   }
