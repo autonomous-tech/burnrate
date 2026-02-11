@@ -17,3 +17,12 @@ CREATE TABLE IF NOT EXISTS monthly_usage (
   PRIMARY KEY (user_id, month),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+-- Copilot premium request usage (one row per GitHub user per month)
+CREATE TABLE IF NOT EXISTS copilot_usage (
+  github_username TEXT NOT NULL,
+  month TEXT NOT NULL,
+  premium_requests REAL DEFAULT 0,
+  updated_at INTEGER,
+  PRIMARY KEY (github_username, month)
+);

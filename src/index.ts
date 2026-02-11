@@ -1,6 +1,8 @@
 export interface Env {
   DB: D1Database;
   ENVIRONMENT: string;
+  GITHUB_ORG: string;
+  GITHUB_TOKEN: string;
 }
 
 interface CorsHeaders {
@@ -53,6 +55,14 @@ export default {
 
     if (url.pathname === '/api/profile/update' && request.method === 'POST') {
       return handleProfileUpdate(request, env);
+    }
+
+    if (url.pathname === '/api/leaderboard/copilot' && request.method === 'GET') {
+      return handleCopilotLeaderboard(request, env);
+    }
+
+    if (url.pathname === '/api/copilot/sync' && request.method === 'POST') {
+      return handleCopilotSync(request, env);
     }
 
     // Serve static HTML for root
@@ -131,7 +141,6 @@ async function handleUsageSubmit(request: Request, env: Env): Promise<Response> 
     let inputTokens = 0;
     let outputTokens = 0;
     let totalTokens = 0;
-
     if (body.monthly) {
       // Monthly format — find current month entry
       const entry = body.monthly.find((e: any) => e.month === month);
@@ -240,6 +249,115 @@ async function handleMyUsage(request: Request, env: Env): Promise<Response> {
     });
   } catch (error) {
     return jsonResponse({ error: 'Failed to fetch usage' }, 500);
+  }
+}
+
+async function handleCopilotSync(request: Request, env: Env): Promise<Response> {
+  try {
+    if (!env.GITHUB_TOKEN) {
+      return jsonResponse({ error: 'GitHub token not configured' }, 500);
+    }
+
+    const org = env.GITHUB_ORG || 'autonomous-tech';
+    const now = new Date();
+    const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+    // Step 1: Get all Copilot seat holders
+    const seatsResp = await fetch(`https://api.github.com/orgs/${org}/copilot/billing/seats`, {
+      headers: {
+        'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
+        'Accept': 'application/json',
+        'User-Agent': 'burnrate-worker',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+
+    if (!seatsResp.ok) {
+      return jsonResponse({ error: 'Failed to fetch Copilot seats', status: seatsResp.status }, 502);
+    }
+
+    const seatsData = await seatsResp.json() as any;
+    const logins: string[] = (seatsData.seats || []).map((s: any) => s.assignee?.login).filter(Boolean);
+
+    if (logins.length === 0) {
+      return jsonResponse({ success: true, month, users_synced: 0, message: 'No Copilot seats found' });
+    }
+
+    // Step 2: Fetch premium request usage for each user
+    const statements: D1PreparedStatement[] = [];
+
+    for (const login of logins) {
+      const usageResp = await fetch(
+        `https://api.github.com/organizations/${org}/settings/billing/premium_request/usage?user=${login}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
+            'Accept': 'application/json',
+            'User-Agent': 'burnrate-worker',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        }
+      );
+
+      if (!usageResp.ok) continue;
+
+      const usageData = await usageResp.json() as any;
+      const items: any[] = usageData.usageItems || [];
+
+      // Sum grossQuantity across all models for total premium requests
+      let totalRequests = 0;
+      for (const item of items) {
+        totalRequests += item.grossQuantity || 0;
+      }
+
+      // Round to 2 decimal places to avoid floating point noise
+      totalRequests = Math.round(totalRequests * 100) / 100;
+
+      statements.push(
+        env.DB.prepare(`
+          INSERT INTO copilot_usage (github_username, month, premium_requests, updated_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(github_username, month) DO UPDATE SET
+            premium_requests = excluded.premium_requests,
+            updated_at = excluded.updated_at
+        `).bind(login, month, totalRequests, Date.now())
+      );
+    }
+
+    if (statements.length > 0) {
+      await env.DB.batch(statements);
+    }
+
+    return jsonResponse({ success: true, month, users_synced: statements.length });
+  } catch (error) {
+    console.error('Copilot sync error:', error);
+    return jsonResponse({ error: 'Failed to sync Copilot usage' }, 500);
+  }
+}
+
+async function handleCopilotLeaderboard(request: Request, env: Env): Promise<Response> {
+  try {
+    const now = new Date();
+    const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+    const results = await env.DB.prepare(`
+      SELECT github_username, premium_requests
+      FROM copilot_usage
+      WHERE month = ? AND premium_requests > 0
+      ORDER BY premium_requests DESC
+      LIMIT 50
+    `).bind(month).all();
+
+    const leaderboard = results.results?.map((row: any, index: number) => ({
+      rank: index + 1,
+      name: row.github_username,
+      premium_requests: row.premium_requests,
+    })) || [];
+
+    return jsonResponse({ month: monthLabel, leaderboard });
+  } catch (error) {
+    return jsonResponse({ error: 'Failed to fetch Copilot leaderboard' }, 500);
   }
 }
 
@@ -422,9 +540,8 @@ function getIndexHTML(): string {
       background: #fafafa;
     }
     .leaderboard-table thead th:nth-child(1) { width: 60px; }
-    .leaderboard-table thead th:nth-child(3),
-    .leaderboard-table thead th:nth-child(4),
-    .leaderboard-table thead th:nth-child(5) { text-align: right; }
+    .leaderboard-table thead th.num,
+    .leaderboard-table tbody td.num { text-align: right; }
     .leaderboard-table tbody tr { border-bottom: 1px solid #f3f4f6; }
     .leaderboard-table tbody tr:last-child { border-bottom: none; }
     .leaderboard-table tbody td {
@@ -432,13 +549,33 @@ function getIndexHTML(): string {
       font-size: 0.875rem;
       font-family: "SF Mono", "Fira Code", "Fira Mono", "Roboto Mono", monospace;
     }
-    .leaderboard-table tbody td:nth-child(3),
-    .leaderboard-table tbody td:nth-child(4),
-    .leaderboard-table tbody td:nth-child(5) { text-align: right; }
     .leaderboard-table tbody td:nth-child(2) {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-weight: 500;
     }
+
+    /* Leaderboard tabs */
+    .lb-tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: 1rem;
+    }
+    .lb-tab {
+      background: none;
+      border: 1px solid #e5e7eb;
+      padding: 0.5rem 1.25rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: #6b7280;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .lb-tab:first-child { border-radius: 8px 0 0 8px; }
+    .lb-tab:last-child { border-radius: 0 8px 8px 0; }
+    .lb-tab.active { background: #22c55e; color: #fff; border-color: #22c55e; }
+    .lb-panel { display: none; }
+    .lb-panel.active { display: block; }
+
 
     /* Rank styles */
     .rank { font-weight: 700; }
@@ -670,21 +807,47 @@ function getIndexHTML(): string {
       <span id="monthLabel">Loading...</span>
     </div>
 
-    <div class="leaderboard-table">
-      <table>
-        <thead>
-          <tr>
-            <th>Rank</th>
-            <th>User</th>
-            <th>Input Tokens</th>
-            <th>Output Tokens</th>
-            <th>Total Tokens</th>
-          </tr>
-        </thead>
-        <tbody id="leaderboardBody">
-          <tr><td colspan="5" class="empty-state"><div>Loading...</div></td></tr>
-        </tbody>
-      </table>
+    <div class="lb-tabs">
+      <button class="lb-tab active" data-lb="claude">Claude Code</button>
+      <button class="lb-tab" data-lb="copilot">Copilot</button>
+    </div>
+
+    <!-- Claude Code Panel -->
+    <div class="lb-panel active" id="lb-claude">
+      <div class="leaderboard-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>User</th>
+              <th class="num">Input Tokens</th>
+              <th class="num">Output Tokens</th>
+              <th class="num">Total Tokens</th>
+            </tr>
+          </thead>
+          <tbody id="leaderboardBody">
+            <tr><td colspan="5" class="empty-state"><div>Loading...</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Copilot Panel -->
+    <div class="lb-panel" id="lb-copilot">
+      <div class="leaderboard-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>User</th>
+              <th class="num">Premium Requests</th>
+            </tr>
+          </thead>
+          <tbody id="copilotBody">
+            <tr><td colspan="3" class="empty-state"><div>Loading...</div></td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -839,9 +1002,11 @@ npx ccusage@latest monthly --json | curl -s -X POST \\
     });
     document.getElementById("refreshBtn").addEventListener("click", function() {
       this.classList.add("spinning");
-      loadLeaderboard().finally(function() {
-        document.getElementById("refreshBtn").classList.remove("spinning");
-      });
+      var syncP = fetch("/api/copilot/sync", { method: "POST" }).catch(function() {});
+      Promise.all([loadLeaderboard(), syncP.then(function() { return loadCopilotLeaderboard(); })])
+        .finally(function() {
+          document.getElementById("refreshBtn").classList.remove("spinning");
+        });
     });
 
     // Close buttons
@@ -860,7 +1025,18 @@ npx ccusage@latest monthly --json | curl -s -X POST \\
       if (e.target === this) closeModal("joinOverlay");
     });
 
-    // --- Tabs ---
+    // --- Leaderboard tabs ---
+    document.querySelectorAll(".lb-tab").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        var tab = this.getAttribute("data-lb");
+        document.querySelectorAll(".lb-tab").forEach(function(b) { b.classList.remove("active"); });
+        this.classList.add("active");
+        document.querySelectorAll(".lb-panel").forEach(function(p) { p.classList.remove("active"); });
+        document.getElementById("lb-" + tab).classList.add("active");
+      });
+    });
+
+    // --- Modal Tabs ---
     document.querySelectorAll(".tab-btn").forEach(function(btn) {
       btn.addEventListener("click", function() {
         var tabName = this.getAttribute("data-tab");
@@ -965,6 +1141,17 @@ npx ccusage@latest monthly --json | curl -s -X POST \\
     });
 
     // --- Leaderboard ---
+    function rankHtml(item) {
+      var rankClass = "";
+      var rowClass = "";
+      var rankPrefix = "";
+      var totalSuffix = "";
+      if (item.rank === 1) { rankClass = "rank-1"; rowClass = "row-gold"; rankPrefix = "&#x1F451; "; totalSuffix = " &#x1F525;"; }
+      else if (item.rank === 2) { rankClass = "rank-2"; }
+      else if (item.rank === 3) { rankClass = "rank-3"; }
+      return { rankClass: rankClass, rowClass: rowClass, rankPrefix: rankPrefix, totalSuffix: totalSuffix };
+    }
+
     function loadLeaderboard() {
       return fetch("/api/leaderboard")
         .then(function(resp) { return resp.json(); })
@@ -980,21 +1167,13 @@ npx ccusage@latest monthly --json | curl -s -X POST \\
 
           var html = "";
           data.leaderboard.forEach(function(item) {
-            var rankClass = "";
-            var rowClass = "";
-            var rankPrefix = "";
-            var totalSuffix = "";
-
-            if (item.rank === 1) { rankClass = "rank-1"; rowClass = "row-gold"; rankPrefix = "&#x1F451; "; totalSuffix = " &#x1F525;"; }
-            else if (item.rank === 2) { rankClass = "rank-2"; }
-            else if (item.rank === 3) { rankClass = "rank-3"; }
-
-            html += "<tr class=\\"" + rowClass + "\\">" +
-              "<td><span class=\\"rank " + rankClass + "\\">" + rankPrefix + "#" + item.rank + "</span></td>" +
+            var r = rankHtml(item);
+            html += "<tr class=\\"" + r.rowClass + "\\">" +
+              "<td><span class=\\"rank " + r.rankClass + "\\">" + r.rankPrefix + "#" + item.rank + "</span></td>" +
               "<td>" + item.name + "</td>" +
-              "<td class=\\"tokens-muted\\">" + formatTokens(item.input_tokens) + "</td>" +
-              "<td class=\\"tokens-muted\\">" + formatTokens(item.output_tokens) + "</td>" +
-              "<td class=\\"tokens-total\\">" + formatTokens(item.total_tokens) + totalSuffix + "</td>" +
+              "<td class=\\"tokens-muted num\\">" + formatTokens(item.input_tokens) + "</td>" +
+              "<td class=\\"tokens-muted num\\">" + formatTokens(item.output_tokens) + "</td>" +
+              "<td class=\\"tokens-total num\\">" + formatTokens(item.total_tokens) + r.totalSuffix + "</td>" +
               "</tr>";
           });
 
@@ -1006,8 +1185,44 @@ npx ccusage@latest monthly --json | curl -s -X POST \\
         });
     }
 
+    function loadCopilotLeaderboard() {
+      return fetch("/api/leaderboard/copilot")
+        .then(function(resp) { return resp.json(); })
+        .then(function(data) {
+          if (data.month) {
+            document.getElementById("monthLabel").textContent = data.month + " Leaderboard";
+          }
+          var tbody = document.getElementById("copilotBody");
+          if (!data.leaderboard || data.leaderboard.length === 0) {
+            tbody.innerHTML = "<tr><td colspan=\\"3\\" style=\\"text-align:center;padding:3rem 1rem;color:#9ca3af;\\">No Copilot data yet. Click &quot;Sync from GitHub&quot; to load usage.</td></tr>";
+            return;
+          }
+
+          var html = "";
+          data.leaderboard.forEach(function(item) {
+            var r = rankHtml(item);
+            html += "<tr class=\\"" + r.rowClass + "\\">" +
+              "<td><span class=\\"rank " + r.rankClass + "\\">" + r.rankPrefix + "#" + item.rank + "</span></td>" +
+              "<td>" + item.name + "</td>" +
+              "<td class=\\"tokens-total num\\">" + item.premium_requests.toFixed(1) + r.totalSuffix + "</td>" +
+              "</tr>";
+          });
+
+          tbody.innerHTML = html;
+        })
+        .catch(function() {
+          document.getElementById("copilotBody").innerHTML =
+            "<tr><td colspan=\\"3\\" style=\\"text-align:center;padding:2rem;color:#ef4444;\\">Failed to load Copilot leaderboard</td></tr>";
+        });
+    }
+
     loadLeaderboard();
-    setInterval(loadLeaderboard, 30000);
+    loadCopilotLeaderboard();
+    setInterval(function() {
+      var active = document.querySelector(".lb-tab.active");
+      var tab = active ? active.getAttribute("data-lb") : "claude";
+      if (tab === "copilot") { loadCopilotLeaderboard(); } else { loadLeaderboard(); }
+    }, 30000);
   </script>
 </body>
 </html>`;

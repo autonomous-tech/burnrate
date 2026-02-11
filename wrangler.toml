@@ -11,6 +11,7 @@ database_id = "ddf5e84d-d9d1-4d52-b978-2928cd26f93c"
 
 [vars]
 ENVIRONMENT = "development"
+GITHUB_ORG = "autonomous-tech"
 
 # Custom domain
 [[routes]]
