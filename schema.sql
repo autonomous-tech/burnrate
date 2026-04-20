@@ -6,15 +6,16 @@ CREATE TABLE IF NOT EXISTS users (
   created_at INTEGER NOT NULL
 );
 
--- Monthly usage snapshots (one row per user per month)
+-- Monthly usage snapshots (one row per user per machine per month)
 CREATE TABLE IF NOT EXISTS monthly_usage (
   user_id TEXT NOT NULL,
   month TEXT NOT NULL,
+  machine_id TEXT NOT NULL DEFAULT 'default',
   input_tokens INTEGER DEFAULT 0,
   output_tokens INTEGER DEFAULT 0,
   total_tokens INTEGER DEFAULT 0,
   updated_at INTEGER,
-  PRIMARY KEY (user_id, month),
+  PRIMARY KEY (user_id, month, machine_id),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
 

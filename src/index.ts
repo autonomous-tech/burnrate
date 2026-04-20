@@ -167,18 +167,21 @@ async function handleUsageSubmit(request: Request, env: Env): Promise<Response> 
       }
     }
 
-    // Upsert one row per user per month — idempotent
+    // Extract machine identifier from header, fallback to 'default'
+    const machineId = request.headers.get('X-Machine-Id') || 'default';
+
+    // Upsert one row per user per machine per month — idempotent
     await env.DB.prepare(`
-      INSERT INTO monthly_usage (user_id, month, input_tokens, output_tokens, total_tokens, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id, month) DO UPDATE SET
+      INSERT INTO monthly_usage (user_id, month, machine_id, input_tokens, output_tokens, total_tokens, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, month, machine_id) DO UPDATE SET
         input_tokens = excluded.input_tokens,
         output_tokens = excluded.output_tokens,
         total_tokens = excluded.total_tokens,
         updated_at = excluded.updated_at
-    `).bind(user.id, month, inputTokens, outputTokens, totalTokens, Date.now()).run();
+    `).bind(user.id, month, machineId, inputTokens, outputTokens, totalTokens, Date.now()).run();
 
-    return jsonResponse({ success: true, month, total_tokens: totalTokens });
+    return jsonResponse({ success: true, month, machine_id: machineId, total_tokens: totalTokens });
   } catch (error) {
     console.error('Usage submit error:', error);
     return jsonResponse({ error: 'Failed to submit usage' }, 500);
@@ -192,11 +195,16 @@ async function handleLeaderboard(request: Request, env: Env): Promise<Response> 
     const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 
     const results = await env.DB.prepare(`
-      SELECT u.display_name, m.input_tokens, m.output_tokens, m.total_tokens
+      SELECT u.display_name,
+        SUM(m.input_tokens) as input_tokens,
+        SUM(m.output_tokens) as output_tokens,
+        SUM(m.total_tokens) as total_tokens
       FROM monthly_usage m
       JOIN users u ON m.user_id = u.id
-      WHERE m.month = ? AND m.total_tokens > 0
-      ORDER BY m.total_tokens DESC
+      WHERE m.month = ?
+      GROUP BY m.user_id
+      HAVING total_tokens > 0
+      ORDER BY total_tokens DESC
       LIMIT 50
     `).bind(month).all();
 
@@ -231,14 +239,15 @@ async function handleMyUsage(request: Request, env: Env): Promise<Response> {
     }
 
     const stats = await env.DB.prepare(`
-      SELECT 
+      SELECT
         month,
-        input_tokens,
-        output_tokens,
-        total_tokens,
-        updated_at
+        SUM(input_tokens) as input_tokens,
+        SUM(output_tokens) as output_tokens,
+        SUM(total_tokens) as total_tokens,
+        MAX(updated_at) as updated_at
       FROM monthly_usage
       WHERE user_id = ?
+      GROUP BY month
       ORDER BY month DESC
       LIMIT 12
     `).bind(user.id).all();
@@ -871,6 +880,7 @@ function getIndexHTML(): string {
   "https://burnrate.autonomoustech.ca/api/usage/submit" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer <span class="hl" id="apiKeySlot1">YOUR_API_KEY</span>" \\
+  -H "X-Machine-Id: $(hostname -s)" \\
   -d @-<button class="copy-btn" id="copyManualBtn">Copy</button></div>
         </div>
 
@@ -888,11 +898,13 @@ function getIndexHTML(): string {
             <div class="step-desc">This script runs ccusage and sends the data to burnrate.</div>
             <div class="code-block"><span class="comment">#!/bin/bash</span>
 API_KEY="<span class="hl" id="apiKeySlot2">YOUR_API_KEY</span>"
+MACHINE_ID=$(hostname -s)
 
 npx ccusage@latest monthly --json | curl -s -X POST \\
   "https://burnrate.autonomoustech.ca/api/usage/submit" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
+  -H "X-Machine-Id: $MACHINE_ID" \\
   -d @-<button class="copy-btn" id="copyScriptBtn">Copy</button></div>
             <div class="step-desc">Save this as <strong>~/.claude/hooks/scripts/burnrate.sh</strong>, then make it executable:</div>
             <div class="code-block">chmod +x ~/.claude/hooks/scripts/burnrate.sh<button class="copy-btn" data-copy="chmod +x ~/.claude/hooks/scripts/burnrate.sh">Copy</button></div>
@@ -905,28 +917,17 @@ npx ccusage@latest monthly --json | curl -s -X POST \\
   "hooks": {
     "SessionEnd": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/scripts/burnrate.sh"
+            "command": "~/.claude/hooks/scripts/burnrate.sh",
+            "timeout": 120
           }
         ]
       }
     ]
   }
 }<button class="copy-btn" id="copyHookBtn">Copy</button></div>
-            <div class="step-desc" style="margin-top: 0.75rem; font-size: 0.75rem; color: #9ca3af;">Using an older version of Claude Code? Use this format instead:</div>
-            <div class="code-block" style="font-size: 0.75rem; opacity: 0.7;">{
-  "hooks": {
-    "SessionEnd": [
-      {
-        "type": "command",
-        "command": "~/.claude/hooks/scripts/burnrate.sh"
-      }
-    ]
-  }
-}<button class="copy-btn" id="copyHookOldBtn">Copy</button></div>
           </div>
 
           <div class="step">
